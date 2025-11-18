@@ -1,0 +1,62 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get repository metadata
+        id: meta
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data } = await github.rest.repos.get({ owner, repo });
+            core.setOutput('is_fork', data.fork ? 'true' : 'false');
+            core.setOutput('default_branch', data.default_branch);
+            if (data.parent) {
+              core.setOutput('parent_full_name', data.parent.full_name);
+              core.setOutput('parent_default_branch', data.parent.default_branch);
+            } else {
+              core.setOutput('parent_full_name', '');
+              core.setOutput('parent_default_branch', '');
+            }
+
+      - name: Stop if not a fork
+        if: steps.meta.outputs.is_fork != 'true'
+        run: echo "This repository is not a fork; skipping upstream sync." && exit 0
+
+      - name: Checkout fork default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.meta.outputs.default_branch }}
+
+      - name: Configure git user
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+
+      - name: Add upstream remote and fetch
+        if: steps.meta.outputs.parent_full_name != ''
+        run: |
+          git remote add upstream https://github.com/${{ steps.meta.outputs.parent_full_name }}.git || true
+          git fetch upstream
+
+      - name: Merge upstream into fork default branch
+        if: steps.meta.outputs.parent_full_name != ''
+        run: |
+          git checkout "${{ steps.meta.outputs.default_branch }}"
+          git merge --ff-only "upstream/${{ steps.meta.outputs.parent_default_branch }}"
+
+      - name: Push changes back to origin
+        if: steps.meta.outputs.parent_full_name != ''
+        run: |
+          git push origin "${{ steps.meta.outputs.default_branch }}"
